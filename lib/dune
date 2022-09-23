@@ -1,0 +1,3 @@
+(library
+ (name omen)
+ (libraries notty notty.unix))
