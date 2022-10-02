@@ -21,6 +21,34 @@ type file_classification =
   | Pipe
   | Socket
 
+type action =
+  | EnterDir
+  | ExitDir
+  | NextFile
+  | PrevFile
+  | GotoTop
+  | GotoBottom
+  | Select
+  | SelectAll
+  | UnselectAll
+  | Delete
+  | CopyHere
+  | MoveHere
+  | Rename
+  | CreateNew
+  | Filter
+  | Bookmark
+  | ViewBookmarks
+  | EnterCommand
+  | NoAction
+  | Exit
+
+(* type context = {
+     term : Term.t;
+     file_info : (file_classification * string) list;
+     state : state;
+   } *)
+
 (* classifications slightly modified from $LS_COLORS *)
 let archive_extensions =
   [
@@ -146,6 +174,32 @@ let audio_extensions =
     ".xspf";
   ]
 
+let get_action event =
+  match event with
+  | `Key ((`Escape | `ASCII 'q'), _) -> Exit
+  | `Key ((`Arrow `Up | `ASCII 'k'), _) | `Mouse (`Press (`Scroll `Up), _, _) ->
+      PrevFile
+  | `Key ((`Arrow `Down | `ASCII 'j'), _) | `Mouse (`Press (`Scroll `Down), _, _)
+    ->
+      NextFile
+  | `Key ((`Arrow `Left | `ASCII 'h'), _) -> ExitDir
+  | `Key ((`Arrow `Right | `ASCII 'l' | `Enter), _) -> EnterDir
+  | `Key (`ASCII 'g', _) -> GotoTop
+  | `Key (`ASCII 'G', _) -> GotoBottom
+  | `Key ((`Delete | `ASCII 'x'), _) -> Delete
+  | `Key (`ASCII 'm', _) -> MoveHere
+  | `Key (`ASCII 'p', _) -> CopyHere
+  | `Key (`ASCII 'r', _) -> Rename
+  | `Key (`ASCII 'n', _) -> CreateNew
+  | `Key (`ASCII 's', _) -> Select
+  | `Key (`ASCII 'a', _) -> SelectAll
+  | `Key (`ASCII 'u', _) -> UnselectAll
+  | `Key (`ASCII '/', _) -> Filter
+  | `Key (`ASCII 'b', _) -> Bookmark
+  | `Key (`ASCII 'B', _) -> ViewBookmarks
+  | `Key (`ASCII '$', _) -> EnterCommand
+  | _ -> NoAction
+
 let read_dir dir =
   let cwd = Sys.getcwd () in
   let dir = Filename.concat cwd dir in
@@ -156,7 +210,6 @@ let read_dir dir =
         String.compare (String.lowercase_ascii x) (String.lowercase_ascii y))
       contents
   in
-  (* let paths = List.map (Filename.concat dir) contents in *)
   let result =
     List.map
       (fun name ->
@@ -237,8 +290,10 @@ let file_info_img file_info selected_i filter_text =
         r ^ w ^ x
       in
       let perm_str = p usr_perm ^ p grp_perm ^ p wrld_perm in
-      let dir_prefix = if classification = Directory then "d" else "-" in
-      let perm_str = dir_prefix ^ perm_str in
+      let prefix =
+        match classification with Directory -> "d" | Symlink -> "l" | _ -> "-"
+      in
+      let perm_str = prefix ^ perm_str in
 
       let mtime = Unix.localtime stats.st_mtime in
       let str n = (if n < 10 then "0" else "") ^ string_of_int n in
@@ -262,15 +317,14 @@ let file_info_img file_info selected_i filter_text =
         <|> string A.(fg lightblue) (perm_str ^ "  ")
         <|> string A.empty (time_str ^ "  " ^ size_str))
 
-let dir_contents_img file_info selected_file win_start_i selected_files
-    term_height =
+let dir_contents_img file_info selected_file win_start_i selected_files height =
   let make_img (classification, name) =
     let cwd = Sys.getcwd () in
     let is_selected = List.mem (Filename.concat cwd name) selected_files in
     let color, extra =
       match classification with
-      | Directory -> (A.blue, A.(st bold))
-      | EmptyFile -> (A.gray 15, A.empty)
+      | Directory -> (A.lightblue, A.(st bold))
+      | EmptyFile -> (A.gray 10, A.empty)
       | NormalFile -> (A.white, A.empty)
       | Executable -> (A.green, A.(st bold))
       | Symlink -> (A.cyan, A.(st bold))
@@ -290,12 +344,12 @@ let dir_contents_img file_info selected_file win_start_i selected_files
     in
     I.(prefix <|> string attr name)
   in
-  let win_end_i = win_start_i + term_height in
+  let win_end_i = win_start_i + height in
   let files_to_show =
     List.filteri (fun i _ -> i >= win_start_i && i <= win_end_i) file_info
   in
   let imgs = List.map make_img files_to_show in
-  List.fold_left I.( <-> ) I.empty imgs
+  I.vcat imgs
 
 let preview_img (classification, selected_file) term_height =
   if classification = Directory then
@@ -319,61 +373,62 @@ let preview_img (classification, selected_file) term_height =
           List.rev lines
     in
 
-    let lines =
-      if is_binary then [ "--- binary file ---" ]
-      else
-        let chan = open_in selected_file in
-        read_lines chan [] term_height
-    in
-    let line_imgs = List.map (I.string A.empty) lines in
-    List.fold_left I.( <-> ) I.empty line_imgs
+    if is_binary then (
+      let stdout, stdin =
+        Unix.open_process_args "/usr/bin/file" [| "file"; "-b"; selected_file |]
+      in
+      close_out stdin;
+      let output = input_line stdout in
+      close_in stdout;
+      I.(
+        string A.(fg lightgreen) "--- File details ---"
+        <-> string A.empty output))
+    else
+      let chan = open_in selected_file in
+      let lines = read_lines chan [] term_height in
+      let line_imgs = List.map (I.string A.empty) lines in
+      I.vcat line_imgs
 
-let main_content_img file_info { selected_i; win_start_i; selected_files; _ }
-    term_size =
-  let term_width, term_height = term_size in
+let main_content_img file_info size
+    { selected_i; win_start_i; selected_files; _ } =
+  let width, height = size in
   let img =
     match List.nth_opt file_info selected_i with
     | Some ((_, selected_file) as f) ->
         (* let _, selected_file = List.nth file_info selected_i in *)
         let left_panel =
-          I.hsnap ~align:`Left (term_width / 2)
+          I.hsnap ~align:`Left (width / 2)
             (dir_contents_img file_info selected_file win_start_i selected_files
-               term_height)
+               height)
         in
-        let right_panel = preview_img f (term_height - 2) in
-        I.(left_panel <|> right_panel)
+        let right_panel = preview_img f height in
+        I.(pad ~l:1 ~r:1 left_panel <|> right_panel)
     | None -> I.empty
   in
-  I.(vsnap ~align:`Top (term_height - 2) img)
+  I.vsnap ~align:`Top height img
 
-type action =
-  | EnterDir
-  | ExitDir
-  | NextFile
-  | PrevFile
-  | GotoTop
-  | GotoBottom
-  | Select
-  | SelectAll
-  | UnselectAll
-  | Delete
-  | CopyHere
-  | MoveHere
-  | Rename
-  | CreateNew
-  | Filter
-  | NoAction
-
-let render term file_info confirm_prompt
+let render term file_info confirm_prompt above_prompt_img
     ({ selected_i; filter_text; _ } as state) =
+  let term_width, term_height = Term.size term in
   let dir_line = curr_dir_img () in
-  let main_content = main_content_img file_info state (Term.size term) in
+  let main_content =
+    main_content_img file_info (term_width, term_height - 2) state
+  in
+  let above_prompt_img =
+    match above_prompt_img with
+    | None -> I.empty
+    | Some img ->
+        I.(
+          uchar A.empty (Uchar.of_int 0x2500) term_width 1 <-> img <-> void 1 1)
+  in
+  let main_content = I.crop ~b:(I.height above_prompt_img) main_content in
   let bottom_line =
     match confirm_prompt with
     | Some msg -> I.(string A.empty msg)
     | None -> file_info_img file_info selected_i filter_text
   in
-  Term.image term I.(dir_line <-> main_content <-> bottom_line)
+  Term.image term
+    I.(dir_line <-> main_content <-> above_prompt_img <-> bottom_line)
 
 let copy_file input_name output_name =
   let input_chan = open_in_bin input_name in
@@ -393,7 +448,41 @@ let copy_file input_name output_name =
   close_in input_chan;
   close_out output_chan
 
-let rec delete_selection term file_info to_delete state =
+let rec multiple_choice term file_info prompt actions state =
+  render term file_info (Some prompt) None state;
+  match Term.event term with
+  | `Key (`Escape, _) -> state
+  | `Key (`ASCII key, _) -> (
+      let action = List.find_opt (fun (k, _) -> k = key) actions in
+      match action with
+      | None -> multiple_choice term file_info prompt actions state
+      | Some (_, fn) -> fn ())
+  | _ -> multiple_choice term file_info prompt actions state
+
+let gather_input term file_info prompt_prefix above_prompt_img typed_input
+    on_complete state =
+  let rec recurse typed_input =
+    let prompt = Printf.sprintf "%s %s|" prompt_prefix typed_input in
+    render term file_info (Some prompt) above_prompt_img state;
+    match Term.event term with
+    | `Key (`Escape, _) -> ()
+    | `Key (`Enter, _) -> on_complete typed_input
+    | `Key (`ASCII c, _) -> recurse (typed_input ^ String.make 1 c)
+    | `Key (`Backspace, _) ->
+        let str =
+          String.sub typed_input 0 (max 0 (String.length typed_input - 1))
+        in
+        recurse str
+    | _ -> recurse typed_input
+  in
+  recurse typed_input
+
+let notification_prompt term file_info prompt state update =
+  render term file_info (Some prompt) None state;
+  let action = get_action (Term.event term) in
+  update term action state
+
+let delete_selection term file_info to_delete state =
   let term_width, _ = Term.size term in
   let msg =
     match String.concat ", " (List.map Filename.basename to_delete) with
@@ -401,67 +490,47 @@ let rec delete_selection term file_info to_delete state =
         string_of_int (List.length to_delete) ^ " items"
     | str -> str
   in
-  render term file_info (Some ("Confirm deletion of " ^ msg ^ "? (y/n)")) state;
-  match Term.event term with
-  | `Key (`ASCII 'y', _) ->
-      List.iter (fun file -> Sys.remove file) to_delete;
-      { state with selected_files = [] }
-  | `Key ((`ASCII 'n' | `Escape), _) -> state
-  | _ -> delete_selection term file_info to_delete state
+  let delete () =
+    List.iter (fun file -> Sys.remove file) to_delete;
+    { state with selected_files = [] }
+  in
+  multiple_choice term file_info
+    ("Confirm deletion of " ^ msg ^ "? (y/n)")
+    [ ('y', delete); ('n', fun () -> state) ]
+    state
 
-let rec rename_files term file_info files typed_input state =
+let rec rename_files term file_info files state =
   match files with
   | [] -> ()
-  | file :: rest -> (
-      let prompt =
-        Printf.sprintf "Rename %s: %s|" (Filename.basename file) typed_input
-      in
-      render term file_info (Some prompt) state;
-      match Term.event term with
-      | `Key (`Escape, _) -> ()
-      | `Key (`Enter, _) ->
+  | file :: rest ->
+      (* TODO bug when selecting several files to rename *)
+      let prefix = Printf.sprintf "Rename %s:" file in
+      gather_input term file_info prefix None ""
+        (fun typed_input ->
           Sys.rename file typed_input;
-          rename_files term file_info rest "" state
-      | `Key (`ASCII c, _) ->
-          rename_files term file_info files
-            (typed_input ^ String.make 1 c)
-            state
-      | `Key (`Backspace, _) ->
-          let str =
-            String.sub typed_input 0 (max 0 (String.length typed_input - 1))
-          in
-          rename_files term file_info files str state
-      | _ -> rename_files term file_info files typed_input state)
+          rename_files term file_info rest state)
+        state
 
 type which = NewFile | NewDirectory
 
-let rec name_new_item term file_info which typed_input state =
+let name_new_item term file_info which state =
   let which_str =
     match which with NewFile -> "file" | NewDirectory -> "directory"
   in
-  let prompt = Printf.sprintf "Name for new %s by: %s|" which_str typed_input in
-  render term file_info (Some prompt) state;
-  match Term.event term with
-  | `Key (`Escape, _) -> ()
-  | `Key (`Enter, _) -> (
+  let prefix = Printf.sprintf "Name for new %s:" which_str in
+  gather_input term file_info prefix None ""
+    (fun typed_input ->
       match which with
       | NewFile -> close_out (open_out typed_input)
       | NewDirectory -> Sys.mkdir typed_input 0o755)
-  | `Key (`ASCII c, _) ->
-      name_new_item term file_info which (typed_input ^ String.make 1 c) state
-  | `Key (`Backspace, _) ->
-      let str =
-        String.sub typed_input 0 (max 0 (String.length typed_input - 1))
-      in
-      name_new_item term file_info which str state
-  | _ -> name_new_item term file_info which typed_input state
+    state
 
 let rec create_new term file_info state =
-  render term file_info (Some "Create new: (f)ile, (d)irectory") state;
+  render term file_info (Some "Create new: (f)ile, (d)irectory") None state;
   match Term.event term with
   | `Key (`Escape, _) -> ()
-  | `Key (`ASCII 'f', _) -> name_new_item term file_info NewFile "" state
-  | `Key (`ASCII 'd', _) -> name_new_item term file_info NewDirectory "" state
+  | `Key (`ASCII 'f', _) -> name_new_item term file_info NewFile state
+  | `Key (`ASCII 'd', _) -> name_new_item term file_info NewDirectory state
   | _ -> create_new term file_info state
 
 let filter_file_info filter_text =
@@ -476,7 +545,7 @@ let rec input_filter term file_info filter_text state =
     { state with filter_text; selected_i = 0; win_start_i = 0 }
   in
   let filtered_file_info = filter_file_info filter_text in
-  render term filtered_file_info (Some prompt) updated_state;
+  render term filtered_file_info (Some prompt) None updated_state;
   match Term.event term with
   | `Key (`Escape, _) -> state
   | `Key (`Enter, _) -> updated_state
@@ -489,146 +558,251 @@ let rec input_filter term file_info filter_text state =
       input_filter term file_info str state
   | _ -> input_filter term file_info filter_text state
 
+let data_dir =
+  Filename.concat
+    (Option.value
+       ~default:(Filename.concat (Sys.getenv "HOME") ".local/share")
+       (Sys.getenv_opt "XDG_DATA_HOME"))
+    "omen"
+
+let get_bookmarks () =
+  let in_chan = open_in (Filename.concat data_dir "bookmarks") in
+  let rec read_lines chan lines =
+    try
+      let line = input_line chan in
+      read_lines chan (line :: lines)
+    with End_of_file ->
+      close_in chan;
+      List.rev lines
+  in
+  let lines = read_lines in_chan [] in
+  List.map
+    (fun x ->
+      let i = String.rindex x ':' in
+      let name = String.sub x 0 i in
+      let value = String.sub x (i + 1) (String.length x - (i + 1)) in
+      (name, value))
+    lines
+
+let write_bookmarks bookmarks =
+  let out_chan = open_out (Filename.concat data_dir "bookmarks") in
+  let rec write_lines lines =
+    match lines with
+    | [] -> ()
+    | (name, value) :: rest ->
+        output_string out_chan (Printf.sprintf "%s:%s\n" name value);
+        write_lines rest
+  in
+  write_lines bookmarks
+
+let bookmarks_img bookmarks =
+  let above_prompt_imgs =
+    List.map
+      (fun (name, value) ->
+        I.(string A.(fg lightcyan) name <|> string A.empty (" -> " ^ value)))
+      bookmarks
+  in
+  I.vcat above_prompt_imgs
+
+let set_bookmark term file_info state =
+  let bookmarks = get_bookmarks () in
+  let cwd = Sys.getcwd () in
+  let unbookmark () =
+    let bookmarks = List.filter (fun (_, dir) -> dir <> cwd) bookmarks in
+    write_bookmarks bookmarks;
+    state
+  in
+  if List.exists (fun (_, value) -> value = cwd) bookmarks then
+    (* TODO maybe replace gather_input with returning state *)
+    ignore
+    @@ multiple_choice term file_info "Unbookmark this directory? (y/n)"
+         [ ('y', unbookmark); ('n', fun () -> state) ]
+         state
+  else
+    let dir_name = Filename.basename (Sys.getcwd ()) in
+    let above_prompt_img =
+      match bookmarks with
+      | [] -> None
+      | _ ->
+          Some
+            I.(
+              string A.empty "Existing bookmarks:"
+              <-> void 1 1 <-> bookmarks_img bookmarks)
+    in
+    gather_input term file_info "Bookmark name: " above_prompt_img dir_name
+      (fun typed_input ->
+        let bookmarks =
+          (typed_input, Sys.getcwd ())
+          :: List.filter
+               (fun (name, _) -> name <> typed_input)
+               (get_bookmarks ())
+        in
+        write_bookmarks bookmarks)
+      state
+
+let goto_bookmark term file_info state update =
+  let bookmarks = get_bookmarks () in
+  let rec recurse prefix =
+    let above_prompt_img = Some (bookmarks_img bookmarks) in
+    gather_input term file_info prefix above_prompt_img ""
+      (fun typed_input ->
+        match List.find_opt (fun (name, _) -> name = typed_input) bookmarks with
+        | None -> recurse "Bookmark not found; goto bookmark:"
+        | Some (_, dir) -> Sys.chdir dir)
+      state
+  in
+  match bookmarks with
+  | [] ->
+      notification_prompt term file_info "No bookmarks have been set" state
+        update
+  | _ -> recurse "Goto bookmark:"
+
+let enter_command term file_info state =
+  gather_input term file_info "$" None ""
+    (fun typed_input -> ignore @@ Sys.command typed_input)
+    state
+
+(* the "main loop" of the program *)
 let rec update term action
     ({ selected_i; win_start_i; selected_files; filter_text } as state) =
-  let _, term_height = Term.size term in
-  let file_info = filter_file_info filter_text in
-  (* max 1 is a bit of a hack to make empty directories play nicely *)
-  let tot_num = max 1 (List.length file_info) in
-  let selected_file_opt = List.nth_opt file_info selected_i in
+  if action = Exit then ()
+  else
+    let _, term_height = Term.size term in
+    let file_info = filter_file_info filter_text in
+    (* max 1 is a bit of a hack to make empty directories play nicely *)
+    let tot_num = max 1 (List.length file_info) in
+    let selected_file_opt = List.nth_opt file_info selected_i in
 
-  let adjust_window new_i =
-    let main_window_h = term_height - 2 in
-    let new_i_in_window = new_i - win_start_i in
-    let positions_shifted = new_i - selected_i in
-    let min_padding = 3 in
-    if
-      new_i > selected_i
-      && new_i_in_window >= main_window_h - min_padding
-      && selected_i < tot_num - min_padding - 1
-    then min (tot_num - main_window_h) (win_start_i + positions_shifted)
-    else if new_i < selected_i && new_i_in_window < min_padding then
-      max 0 (win_start_i + positions_shifted)
-    else win_start_i
-  in
+    let adjust_window new_i =
+      let main_window_h = term_height - 2 in
+      let new_i_in_window = new_i - win_start_i in
+      let positions_shifted = new_i - selected_i in
+      let min_padding = 3 in
+      if
+        new_i > selected_i
+        && new_i_in_window >= main_window_h - min_padding
+        && selected_i < tot_num - min_padding - 1
+      then min (tot_num - main_window_h) (win_start_i + positions_shifted)
+      else if new_i < selected_i && new_i_in_window < min_padding then
+        max 0 (win_start_i + positions_shifted)
+      else win_start_i
+    in
 
-  let new_state =
-    match action with
-    | EnterDir -> (
-        match selected_file_opt with
-        | Some (classification, selected_file) ->
-            if classification = Directory then (
-              Sys.chdir selected_file;
-              { state with selected_i = 0; win_start_i = 0 })
-            else
-              let _ = Sys.command ("/usr/bin/nvim " ^ selected_file) in
-              state
-        | None -> state)
-    | ExitDir ->
-        Sys.chdir "..";
-        { state with selected_i = 0; win_start_i = 0 }
-    | NextFile ->
-        let selected_i = (selected_i + 1) mod tot_num in
-        let win_start_i = adjust_window selected_i in
-        { state with selected_i; win_start_i }
-    | PrevFile ->
-        let selected_i = (selected_i - 1 + tot_num) mod tot_num in
-        let win_start_i = adjust_window selected_i in
-        { state with selected_i; win_start_i }
-    | GotoTop ->
-        let win_start_i = adjust_window 0 in
-        { state with selected_i = 0; win_start_i }
-    | GotoBottom ->
-        let win_start_i = adjust_window (tot_num - 1) in
-        { state with selected_i = tot_num - 1; win_start_i }
-    | Select -> (
-        match selected_file_opt with
-        | Some (_, selected_file) ->
-            let file = Filename.concat (Sys.getcwd ()) selected_file in
-            let selected_files =
-              if List.mem file selected_files then
-                List.filter (( <> ) file) selected_files
-              else file :: selected_files
-            in
+    (* let ctx = { term; file_info; state } in *)
+    let new_state =
+      match action with
+      | EnterDir -> (
+          match selected_file_opt with
+          | Some (classification, selected_file) ->
+              if classification = Directory then (
+                Sys.chdir selected_file;
+                { state with selected_i = 0; win_start_i = 0; filter_text = "" })
+              else
+                let _ = Sys.command ("/usr/bin/nvim " ^ selected_file) in
+                state
+          | None -> state)
+      | ExitDir ->
+          Sys.chdir "..";
+          { state with selected_i = 0; win_start_i = 0; filter_text = "" }
+      | NextFile ->
+          let selected_i = (selected_i + 1) mod tot_num in
+          let win_start_i = adjust_window selected_i in
+          { state with selected_i; win_start_i }
+      | PrevFile ->
+          let selected_i = (selected_i - 1 + tot_num) mod tot_num in
+          let win_start_i = adjust_window selected_i in
+          { state with selected_i; win_start_i }
+      | GotoTop ->
+          let win_start_i = adjust_window 0 in
+          { state with selected_i = 0; win_start_i }
+      | GotoBottom ->
+          let win_start_i = adjust_window (tot_num - 1) in
+          { state with selected_i = tot_num - 1; win_start_i }
+      | Select -> (
+          match selected_file_opt with
+          | Some (_, selected_file) ->
+              let file = Filename.concat (Sys.getcwd ()) selected_file in
+              let selected_files =
+                if List.mem file selected_files then
+                  List.filter (( <> ) file) selected_files
+                else file :: selected_files
+              in
+              { state with selected_files }
+          | None -> state)
+      | SelectAll ->
+          let cwd = Sys.getcwd () in
+          let curr_dir_file_paths =
+            List.map (fun (_, name) -> Filename.concat cwd name) file_info
+          in
+          let without_curr_dir =
+            List.filter
+              (fun x -> not @@ List.mem x curr_dir_file_paths)
+              selected_files
+          in
+
+          (* if everything in this directory is already selected then unselect it *)
+          let all_selected =
+            List.for_all
+              (fun x -> List.mem x selected_files)
+              curr_dir_file_paths
+          in
+          if all_selected then { state with selected_files = without_curr_dir }
+          else
+            let selected_files = without_curr_dir @ curr_dir_file_paths in
             { state with selected_files }
-        | None -> state)
-    | SelectAll ->
-        let cwd = Sys.getcwd () in
-        let curr_dir_file_paths =
-          List.map (fun (_, name) -> Filename.concat cwd name) file_info
-        in
-        let without_curr_dir =
-          List.filter
-            (fun x -> not @@ List.mem x curr_dir_file_paths)
-            selected_files
-        in
+      | UnselectAll -> { state with selected_files = [] }
+      | Delete ->
+          let to_delete =
+            match selected_files with
+            | [] ->
+                Option.to_list (Option.map (fun (_, x) -> x) selected_file_opt)
+            | _ -> selected_files
+          in
+          delete_selection term file_info to_delete state
+      | CopyHere ->
+          List.iter (fun x -> copy_file x (Filename.basename x)) selected_files;
+          { state with selected_files = [] }
+      | MoveHere ->
+          List.iter (fun x -> Sys.rename x (Filename.basename x)) selected_files;
+          { state with selected_files = [] }
+      | Rename ->
+          let to_rename =
+            match selected_files with
+            | [] ->
+                Option.to_list (Option.map (fun (_, x) -> x) selected_file_opt)
+            | _ -> selected_files
+          in
+          rename_files term file_info to_rename state;
+          { state with selected_files = [] }
+      | CreateNew ->
+          create_new term file_info state;
+          state
+      | Filter -> input_filter term file_info filter_text state
+      | Bookmark ->
+          set_bookmark term file_info state;
+          state
+      | ViewBookmarks ->
+          goto_bookmark term file_info state update;
+          state
+      | EnterCommand ->
+          enter_command term file_info state;
+          state
+      | _ -> state
+    in
 
-        (* if everything in this directory is already selected then unselect it *)
-        let all_selected =
-          List.for_all (fun x -> List.mem x selected_files) curr_dir_file_paths
-        in
-        if all_selected then { state with selected_files = without_curr_dir }
-        else
-          let selected_files = without_curr_dir @ curr_dir_file_paths in
-          { state with selected_files }
-    | UnselectAll -> { state with selected_files = [] }
-    | Delete ->
-        let to_delete =
-          match selected_files with
-          | [] ->
-              Option.to_list (Option.map (fun (_, x) -> x) selected_file_opt)
-          | _ -> selected_files
-        in
-        delete_selection term file_info to_delete state
-    | CopyHere ->
-        List.iter (fun x -> copy_file x (Filename.basename x)) selected_files;
-        { state with selected_files = [] }
-    | MoveHere ->
-        List.iter (fun x -> Sys.rename x (Filename.basename x)) selected_files;
-        { state with selected_files = [] }
-    | Rename ->
-        let to_rename =
-          match selected_files with
-          | [] ->
-              Option.to_list (Option.map (fun (_, x) -> x) selected_file_opt)
-          | _ -> selected_files
-        in
-        rename_files term file_info to_rename "" state;
-        { state with selected_files = [] }
-    | CreateNew ->
-        create_new term file_info state;
-        state
-    | Filter -> input_filter term file_info filter_text state
-    | _ -> state
-  in
+    let file_info = filter_file_info new_state.filter_text in
+    render term file_info None None new_state;
 
-  let file_info = filter_file_info new_state.filter_text in
-  render term file_info None new_state;
-  main_loop term new_state
+    let action = get_action (Term.event term) in
+    update term action new_state
 
-and main_loop term state =
-  match Term.event term with
-  | `Key ((`Escape | `ASCII 'q'), _) -> ()
-  | `Key ((`Arrow `Up | `ASCII 'k'), _) -> update term PrevFile state
-  | `Key ((`Arrow `Down | `ASCII 'j'), _) -> update term NextFile state
-  | `Key ((`Arrow `Left | `ASCII 'h'), _) -> update term ExitDir state
-  | `Key ((`Arrow `Right | `ASCII 'l' | `Enter), _) ->
-      update term EnterDir state
-  | `Key (`ASCII 'g', _) -> update term GotoTop state
-  | `Key (`ASCII 'G', _) -> update term GotoBottom state
-  | `Key ((`Delete | `ASCII 'x'), _) -> update term Delete state
-  | `Key (`ASCII 'm', _) -> update term MoveHere state
-  | `Key (`ASCII 'p', _) -> update term CopyHere state
-  | `Key (`ASCII 'r', _) -> update term Rename state
-  | `Key (`ASCII 'n', _) -> update term CreateNew state
-  | `Key (`ASCII 's', _) -> update term Select state
-  | `Key (`ASCII 'a', _) -> update term SelectAll state
-  | `Key (`ASCII 'u', _) -> update term UnselectAll state
-  | `Key (`ASCII '/', _) -> update term Filter state
-  | _ -> update term NoAction state
+let init () =
+  ignore @@ Sys.command ("mkdir -p " ^ data_dir);
+  ignore @@ Sys.command ("touch " ^ Filename.concat data_dir "bookmarks")
 
 let () =
   let term = Term.create () in
+  init ();
   update term NoAction
     { selected_i = 0; win_start_i = 0; selected_files = []; filter_text = "" };
   Term.release term
