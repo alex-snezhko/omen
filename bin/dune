@@ -1,4 +1,4 @@
 (executable
  (public_name omen)
  (name main)
- (libraries omen str notty unix))
+ (libraries omen))
