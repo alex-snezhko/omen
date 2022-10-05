@@ -1,4 +1,5 @@
 (executable
  (public_name omen)
  (name main)
- (libraries omen))
+ (libraries omen)
+ (modes (native exe)))

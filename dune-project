@@ -5,22 +5,18 @@
 (generate_opam_files true)
 
 (source
- (github username/reponame))
+ (github alex-snezhko/omen))
 
-(authors "Author Name")
+(authors "Alex Snezhko")
 
-(maintainers "Maintainer Name")
+(maintainers "Alex Snezhko")
 
 (license LICENSE)
 
-(documentation https://url/to/documentation)
-
 (package
  (name omen)
- (synopsis "A short synopsis")
- (description "A longer description")
- (depends ocaml dune)
- (tags
-  (topics "to describe" your project)))
+ (synopsis "A simple TUI file manager")
+ (description "A TUI file manager functionally similar to nnn and ranger")
+ (depends ocaml dune notty))
 
 ; See the complete stanza docs at https://dune.readthedocs.io/en/stable/dune-files.html#dune-project
