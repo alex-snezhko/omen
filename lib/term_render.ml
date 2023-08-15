@@ -122,10 +122,14 @@ let preview_img (classification, selected_file) term_height =
         string A.(fg lightgreen) "--- File details ---"
         <-> string A.empty output)
     else
-      let chan = open_in selected_file in
-      let lines = read_lines chan [] term_height in
-      let line_imgs = List.map (I.string A.empty) lines in
-      I.vcat line_imgs
+      try
+        let chan = open_in selected_file in
+        let lines = read_lines chan [] term_height in
+        let line_imgs = List.map (I.string A.empty) lines in
+        I.vcat line_imgs
+      with Sys_error _ ->
+        I.(string A.(fg lightgreen) "--- File details ---"
+          <-> string A.empty "Permission Denied" )
 
 let main_content_img file_info size
     { selected_i; win_start_i; selected_files; _ } =
