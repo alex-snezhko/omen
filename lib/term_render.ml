@@ -29,7 +29,7 @@ let file_info_img file_info selected_i filter_text =
   | Some (classification, selected_file) ->
       let tot_num = List.length file_info in
 
-      let stats = Unix.stat selected_file in
+      let stats = Unix.lstat selected_file in
       let k = 1024 in
       let m = k * k in
       let g = m * k in
@@ -116,7 +116,7 @@ let preview_img (classification, selected_file) term_height =
           List.rev lines
     in
 
-    if is_binary then
+    if is_binary || classification = Symlink then
       let output = cmd_output_line "file" [ "-b"; selected_file ] in
       I.(
         string A.(fg lightgreen) "--- File details ---"

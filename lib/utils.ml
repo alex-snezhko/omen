@@ -42,7 +42,7 @@ let read_dir dir =
     List.map
       (fun name ->
         let path = Filename.concat dir name in
-        let stats = Unix.stat path in
+        let stats = Unix.lstat path in
         let classification =
           match stats.st_kind with
           | Unix.S_LNK -> Symlink
