@@ -3,6 +3,8 @@ open Utils
 open Notty
 open Notty_unix
 
+let spaces_in_tab : int = 3
+
 let curr_dir_img () =
   let dir = Sys.getcwd () in
   let home = Option.value ~default:"" (Sys.getenv_opt "HOME") in
@@ -125,7 +127,18 @@ let preview_img (classification, selected_file) term_height =
       try
         let chan = open_in selected_file in
         let lines = read_lines chan [] term_height in
-        let line_imgs = List.map (I.string A.empty) lines in
+        let tab_replacement = List.init spaces_in_tab (fun _ -> ' ') in
+        let filter_tabs (line : string) : string =
+          let chars = String.to_seq line |> List.of_seq in
+          let rec aux (accum : char list) l =
+            match l with
+            |  hd::tl when hd = '\t' -> aux (tab_replacement @ accum) tl
+            |  hd::tl -> aux (hd::accum) tl
+            |  [] -> accum
+          in aux [] chars |> List.rev |> List.to_seq |> String.of_seq
+        in
+        let lines' = List.map filter_tabs lines in
+        let line_imgs = List.map (I.string A.empty) lines' in
         I.vcat line_imgs
       with Sys_error _ ->
         I.(string A.(fg lightgreen) "--- File details ---"
