@@ -125,8 +125,6 @@ let preview_img (classification, selected_file) term_height =
         <-> string A.empty output)
     else
       try
-        let chan = open_in selected_file in
-        let lines = read_lines chan [] term_height in
         let tab_replacement = List.init spaces_in_tab (fun _ -> ' ') in
         let filter_tabs (line : string) : string =
           let chars = String.to_seq line |> List.of_seq in
@@ -137,8 +135,12 @@ let preview_img (classification, selected_file) term_height =
             |  [] -> accum
           in aux [] chars |> List.rev |> List.to_seq |> String.of_seq
         in
-        let lines' = List.map filter_tabs lines in
-        let line_imgs = List.map (I.string A.empty) lines' in
+        let chan = open_in selected_file in
+        let lines = read_lines chan [] term_height
+          |> List.map filter_tabs
+          |> List.map Ansi.strip
+        in
+        let line_imgs = List.map (I.string A.empty) lines in
         I.vcat line_imgs
       with Sys_error _ ->
         I.(string A.(fg lightgreen) "--- File details ---"
