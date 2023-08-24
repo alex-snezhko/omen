@@ -1,5 +1,20 @@
 open Types
 
+let empty_stats : Unix.stats =        
+{ st_dev = 0;
+  st_ino = 0;
+  st_kind = S_REG;
+  st_perm = 0;
+  st_nlink = 0;
+  st_uid = 0;
+  st_gid = 0;
+  st_rdev = 0;
+  st_size = 0;
+  st_atime = 0.0;
+  st_mtime = 0.0;
+  st_ctime = 0.0;
+  }
+
 let perm_str perm classification =
   let usr_perm = (perm land 0o700) lsr 6 in
   let grp_perm = (perm land 0o070) lsr 3 in
@@ -31,7 +46,9 @@ let cmd_output_line cmd args =
 let read_dir dir =
   let cwd = Sys.getcwd () in
   let dir = Filename.concat cwd dir in
-  let contents = Array.to_list (Sys.readdir dir) in
+  let contents = ( try (Sys.readdir dir) with Sys_error _ ->
+    [|"Permission Denied"|] ) |> Array.to_list
+  in
   let contents =
     List.sort
       (fun x y ->
@@ -42,7 +59,9 @@ let read_dir dir =
     List.map
       (fun name ->
         let path = Filename.concat dir name in
-        let stats = Unix.stat path in
+        let stats = try ( Unix.lstat path ) with Unix.Unix_error _ ->
+          empty_stats
+        in
         let classification =
           match stats.st_kind with
           | Unix.S_LNK -> Symlink

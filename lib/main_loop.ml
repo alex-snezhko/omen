@@ -16,7 +16,7 @@ let show_help ctx =
       ("g", "Go to first entry in directory");
       ("G", "Go to last entry in directory");
       ("", "");
-      ("s", "Select this item");
+      ("Space, s", "Select this item");
       ("a", "Select all items in current directory");
       ("u", "Unselect all selected items");
       ("", "");
@@ -54,6 +54,7 @@ let get_action event =
   | `Key (`ASCII 'r', _) -> Rename
   | `Key (`ASCII 'n', _) -> CreateNew
   | `Key (`ASCII 's', _) -> Select
+  | `Key (`ASCII ' ', _) -> Select
   | `Key (`ASCII 'a', _) -> SelectAll
   | `Key (`ASCII 'u', _) -> UnselectAll
   | `Key (`ASCII '/', _) -> Filter
